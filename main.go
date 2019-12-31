@@ -13,6 +13,9 @@ import (
 type Settings struct {
 	BotToken    string `envconfig:"BOT_TOKEN" required:"true"`
 	PostgresURL string `envconfig:"DATABASE_URL" required:"true"`
+	Host        string `envconfig:"HOST" required:"true"`
+	Port        string `envconfig:"PORT" required:"true"`
+	ServiceURL  string `envconfig:"SERVICE_URL" required:"true"`
 }
 
 var err error
@@ -47,7 +50,7 @@ func main() {
 	}
 
 	u := tgbotapi.NewUpdate(int(lastTelegramUpdate + 1))
-	u.Timeout = 60
+	u.Timeout = 600
 	updates, err := bot.GetUpdatesChan(u)
 	if err != nil {
 		log.Error().Err(err).Msg("telegram getupdates fail")
@@ -56,6 +59,7 @@ func main() {
 
 	for update := range updates {
 		lastTelegramUpdate = int64(update.UpdateID)
+		go setLastTelegramUpdate(lastTelegramUpdate)
 		handle(update)
 	}
 }

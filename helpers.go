@@ -1,32 +1,19 @@
 package main
 
-import (
-	"database/sql"
-
-	tgbotapi "gopkg.in/telegram-bot-api.v4"
-)
+func setLastTelegramUpdate(ltu int64) error {
+	_, err := pg.Exec(`
+      UPDATE kv
+      SET value = to_jsonb($1)
+      WHERE key = 'last_telegram_update'
+    `, ltu)
+	return err
+}
 
 func getLastTelegramUpdate() (ltu int64, err error) {
 	err = pg.Get(&ltu, `
-      SELECT telegram_update
-      FROM events
-      ORDER BY time
-      DESC LIMIT 1
+      SELECT (jsonb_build_object('value', value)->>'value')::int
+      FROM kv
+      WHERE key = 'last_telegram_update'
     `)
-	if err == sql.ErrNoRows {
-		err = nil
-		ltu = 0
-	}
-
 	return
-}
-
-func userName(user *tgbotapi.User) string {
-	userName := user.UserName
-	if userName == "" {
-		userName = user.FirstName
-	} else {
-		userName = "@" + userName
-	}
-	return userName
 }

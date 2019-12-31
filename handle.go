@@ -1,110 +1,130 @@
 package main
 
 import (
-	"encoding/hex"
-	"fmt"
-
 	"github.com/hoisie/mustache"
 	tgbotapi "gopkg.in/telegram-bot-api.v4"
 )
 
 func handle(upd tgbotapi.Update) {
 	if upd.Message != nil {
-		if upd.Message.Sticker != nil && upd.Message.ReplyToMessage != nil && upd.Message.Sticker.SetName == "PoohSocialCredit" {
-			// get params
-			points := 0
-			switch hex.EncodeToString([]byte(upd.Message.Sticker.Emoji)) {
-			case "f09f989e": // -20
-				points = -20
-			case "f09f9884": // +20
-				points = +20
-			default:
-				return
-			}
-
-			// check user is admin
-			chatmember, err := bot.GetChatMember(tgbotapi.ChatConfigWithUser{
-				ChatID:             upd.Message.Chat.ID,
-				SuperGroupUsername: upd.Message.Chat.ChatConfig().SuperGroupUsername,
-				UserID:             upd.Message.From.ID,
-			})
-			if err != nil ||
-				(chatmember.Status != "administrator" && chatmember.Status != "creator") {
-				log.Print("not admin")
-				return
-			}
-
-			// save scores
-			_, err = pg.Exec(`
-              INSERT INTO events
-                (chat_id, user_id, creator_id, credits, telegram_update)
-              VALUES ($1, $2, $3, $4, $5)
-            `,
-				upd.Message.Chat.ID,
-				upd.Message.ReplyToMessage.From.ID,
-				upd.Message.From.ID,
-				points,
-				upd.UpdateID,
-			)
-			if err != nil {
-				log.Warn().Err(err).Msg("failed to save event")
-				sendMessage(upd.Message.Chat.ID, "Error!")
-				return
-			}
-
-			sendMessage(upd.Message.Chat.ID,
-				fmt.Sprintf(
-					"%s credits saved.",
-					userName(upd.Message.ReplyToMessage.From),
-				),
-			)
-		} else if upd.Message.Text == "/credits" {
-			var scores []Score
-			err = pg.Select(&scores, `
-              SELECT * FROM (
-                SELECT user_id, sum(credits) AS credits
-                FROM events
-                WHERE chat_id = $1
-                GROUP BY user_id
-              )x ORDER BY credits DESC
-            `, upd.Message.Chat.ID)
-			if err != nil {
-				log.Warn().Err(err).Msg("error fetching scores")
-				sendMessage(upd.Message.Chat.ID, "Error!")
-				return
-			}
-
-			// fetch user names
-			for i, score := range scores {
-				// fallback
-				scores[i].Name = fmt.Sprintf("user:%d", score.UserId)
-
-				chatmember, err := bot.GetChatMember(tgbotapi.ChatConfigWithUser{
-					ChatID:             upd.Message.Chat.ID,
-					SuperGroupUsername: upd.Message.Chat.ChatConfig().SuperGroupUsername,
-					UserID:             int(score.UserId),
-				})
-				if err != nil {
-					continue
-				}
-
-				scores[i].Name = userName(chatmember.User)
-			}
-
-			sendMessage(upd.Message.Chat.ID,
-				mustache.Render(`<b>Credits</b>
-{{#scores}}<code>{{Credits}}</code>: {{Name}}
-{{/scores}}
-                `, map[string]interface{}{
-					"scores": scores,
-				}),
-			)
-		}
+		handleMessage(upd.Message)
 	}
 }
 
-type Score struct {
-	UserId  int64 `db:"user_id"`
-	Credits int64 `db:"credits"`
-	Name    string
+func handleMessage(message *tgbotapi.Message) {
+	opts, err := parseCommand(message.Text)
+	if err != nil {
+		log.Debug().Str("command", message.Text).Err(err).Msg("invalid")
+		sendMessage(message.Chat.ID, USAGE)
+		return
+	}
+	log.Debug().Str("command", message.Text).Msg("command")
+
+	defer func() {
+		if err != nil {
+			sendMessage(message.Chat.ID, "Error: "+err.Error())
+		}
+	}()
+
+	switch {
+	case opts["help"].(bool):
+		sendMessage(message.Chat.ID, `
+          Call <code>/start <jq_filter></code> to generate a channel to receive incoming notifiations.
+
+    TODO
+
+          They will be turned into JSON and the <a href="https://stedolan.github.io/jq/manual/">jq</a> filter <code>{{Filter}}</code> will be applied.
+          Either application/json or application/x-www-form-urlencoded bodies and querystring params are supported. Headers will be aggregated in a <code>"headers"</code>
+        `)
+	case opts["start"].(bool):
+		filter, err := opts.String("<jq_filter>")
+		if err != nil {
+			filter = "."
+		}
+
+		tx, err := pg.Beginx()
+		if err != nil {
+			return
+		}
+		defer tx.Rollback()
+
+		var id string
+		err = tx.Get(&id, `INSERT INTO channel (jq) VALUES ($1) RETURNING id`, filter)
+		if err != nil {
+			return
+		}
+		_, err = tx.Exec(`INSERT INTO subscription (channel, chat_id) VALUES ($1, $2)`,
+			id, message.Chat.ID)
+		if err != nil {
+			return
+		}
+
+		err = tx.Commit()
+		if err != nil {
+			return
+		}
+
+		text := mustache.Render(`Channel <b>{{Id}}</b> created. 
+          Send HTTP requests to <code>{{ServiceURL}}/n/{{Id}}</code>.
+        `, map[string]interface{}{
+			"ServiceURL": s.ServiceURL,
+			"Id":         id,
+			"Filter":     filter,
+		})
+		sendMessage(message.Chat.ID, text)
+	case opts["delete"].(bool):
+		if channel, err := opts.String("<channel>"); err == nil {
+			_, err = pg.Exec(`
+              DELETE FROM subscription
+              WHERE chat_id = $1 AND channel = $2
+            `, message.Chat.ID, channel)
+		} else {
+			_, err = pg.Exec(`
+              DELETE FROM subscription
+              WHERE chat_id = $1
+            `, message.Chat.ID)
+		}
+		if err != nil {
+			return
+		}
+
+		go pg.Exec(`
+          DELETE FROM channel WHERE id IN (
+            SELECT channel.id FROM channel
+            LEFT OUTER JOIN subscription ON channel.id = subscription.channel
+            WHERE subscription.chat_id IS NULL
+          )
+        `)
+	case opts["subscribe"].(bool):
+		channel, _ := opts.String("<channel>")
+		_, err = pg.Exec(`
+          INSERT INTO subscription (channel, chat_id)
+          VALUES ($1, $2)
+          ON CONFLICT (channel, chat_id) DO NOTHING
+        `,
+			channel, message.Chat.ID)
+		if err != nil {
+			return
+		}
+
+		sendMessage(message.Chat.ID, "Subscribed to channel <code>"+channel+"</code>.")
+	case opts["list"].(bool):
+		var channels []struct {
+			Id string `db:"id"`
+			JQ string `db:"jq"`
+		}
+		err = pg.Select(&channels, `
+          SELECT channel FROM subscription
+          WHERE chat_id = $1
+          ORDER BY channel
+        `, message.Chat.ID)
+
+		text := mustache.Render(`<b>Subscribed to channels:</b>{{#Channels}}
+          - <u>{{Id}}</u>: <code>{{ServiceURL}}/n/{{Id}}</code> (<code>{{JQ}}</code>){{/Channels}}
+        `, map[string]interface{}{
+			"ServiceURL": s.ServiceURL,
+			"Channels":   channels,
+		})
+		sendMessage(message.Chat.ID, text)
+	}
 }
