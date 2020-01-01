@@ -52,7 +52,7 @@ func handleMessage(message *tgbotapi.Message) {
 	case opts["start"].(bool):
 		filter, err := opts.String("<jqfilter>")
 		if err != nil {
-			filter = "."
+			filter = ".data"
 		} else {
 			_, err = gojq.Parse(filter)
 			if err != nil {

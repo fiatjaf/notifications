@@ -6,7 +6,7 @@ INSERT INTO kv VALUES ('last_telegram_update', '0') ON CONFLICT (key) DO NOTHING
 
 CREATE TABLE channel (
   id text PRIMARY KEY DEFAULT md5(random()::text),
-  jq text NOT NULL DEFAULT '.'
+  jq text NOT NULL
 );
 
 CREATE TABLE subscription (
