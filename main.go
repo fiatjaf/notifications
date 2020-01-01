@@ -1,8 +1,11 @@
 package main
 
 import (
+	"net/http"
 	"os"
+	"time"
 
+	"github.com/gorilla/mux"
 	"github.com/jmoiron/sqlx"
 	"github.com/kelseyhightower/envconfig"
 	_ "github.com/lib/pq"
@@ -23,6 +26,7 @@ var s Settings
 var pg *sqlx.DB
 var bot *tgbotapi.BotAPI
 var log = zerolog.New(os.Stderr).Output(zerolog.ConsoleWriter{Out: os.Stderr})
+var router = mux.NewRouter()
 
 func main() {
 	err = envconfig.Process("", &s)
@@ -35,13 +39,30 @@ func main() {
 		log.Fatal().Err(err).Msg("couldn't connect to postgres")
 	}
 
+	// http server
+	router.Path("/n/{id}").HandlerFunc(handleWebhook)
+
+	log.Info().Str("port", s.Port).Msg("listening")
+	srv := &http.Server{
+		Handler:      router,
+		Addr:         "0.0.0.0:" + s.Port,
+		WriteTimeout: 300 * time.Second,
+		ReadTimeout:  300 * time.Second,
+	}
+	go func() {
+		err := srv.ListenAndServe()
+		if err != nil {
+			log.Error().Err(err).Msg("error serving http")
+		}
+	}()
+
+	// bot stuff
 	bot, err = tgbotapi.NewBotAPI(s.BotToken)
 	if err != nil {
 		log.Fatal().Err(err).Msg("")
 	}
 	log.Info().Str("username", bot.Self.UserName).Msg("telegram bot authorized")
 
-	// bot stuff
 	lastTelegramUpdate, err := getLastTelegramUpdate()
 	if err != nil {
 		log.Fatal().Err(err).Int64("got", lastTelegramUpdate).

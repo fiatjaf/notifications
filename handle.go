@@ -1,7 +1,11 @@
 package main
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/hoisie/mustache"
+	"github.com/itchyny/gojq"
 	tgbotapi "gopkg.in/telegram-bot-api.v4"
 )
 
@@ -12,10 +16,19 @@ func handle(upd tgbotapi.Update) {
 }
 
 func handleMessage(message *tgbotapi.Message) {
+	if message.Text[0] != '/' {
+		return
+	}
+
 	opts, err := parseCommand(message.Text)
 	if err != nil {
 		log.Debug().Str("command", message.Text).Err(err).Msg("invalid")
-		sendMessage(message.Chat.ID, USAGE)
+		sendMessage(message.Chat.ID,
+			strings.Replace(
+				strings.Replace(USAGE,
+					">", "&gt;", -1),
+				"<", "&lt;", -1),
+		)
 		return
 	}
 	log.Debug().Str("command", message.Text).Msg("command")
@@ -29,7 +42,7 @@ func handleMessage(message *tgbotapi.Message) {
 	switch {
 	case opts["help"].(bool):
 		sendMessage(message.Chat.ID, `
-          Call <code>/start <jq_filter></code> to generate a channel to receive incoming notifiations.
+          Call <code>/start <jqfilter></code> to generate a channel to receive incoming notifiations.
 
     TODO
 
@@ -37,9 +50,15 @@ func handleMessage(message *tgbotapi.Message) {
           Either application/json or application/x-www-form-urlencoded bodies and querystring params are supported. Headers will be aggregated in a <code>"headers"</code>
         `)
 	case opts["start"].(bool):
-		filter, err := opts.String("<jq_filter>")
+		filter, err := opts.String("<jqfilter>")
 		if err != nil {
 			filter = "."
+		} else {
+			_, err = gojq.Parse(filter)
+			if err != nil {
+				err = fmt.Errorf("error parsing filter: %w", err)
+				return
+			}
 		}
 
 		tx, err := pg.Beginx()
@@ -88,6 +107,8 @@ func handleMessage(message *tgbotapi.Message) {
 			return
 		}
 
+		sendMessage(message.Chat.ID, "Deleted.")
+
 		go pg.Exec(`
           DELETE FROM channel WHERE id IN (
             SELECT channel.id FROM channel
@@ -114,13 +135,14 @@ func handleMessage(message *tgbotapi.Message) {
 			JQ string `db:"jq"`
 		}
 		err = pg.Select(&channels, `
-          SELECT channel FROM subscription
+          SELECT id, jq FROM channel
+          INNER JOIN subscription ON subscription.channel = channel.id
           WHERE chat_id = $1
-          ORDER BY channel
+          ORDER BY channel.id
         `, message.Chat.ID)
 
 		text := mustache.Render(`<b>Subscribed to channels:</b>{{#Channels}}
-          - <u>{{Id}}</u>: <code>{{ServiceURL}}/n/{{Id}}</code> (<code>{{JQ}}</code>){{/Channels}}
+          - <u>{{Id}}</u>: <code>{{ServiceURL}}/n/{{Id}}</code> (<code>{{JQ}}</code>){{/Channels}}{{^Channels}}No subscriptions.{{/Channels}}
         `, map[string]interface{}{
 			"ServiceURL": s.ServiceURL,
 			"Channels":   channels,
