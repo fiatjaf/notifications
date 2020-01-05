@@ -42,12 +42,21 @@ func handleMessage(message *tgbotapi.Message) {
 	switch {
 	case opts["help"].(bool):
 		sendMessage(message.Chat.ID, `
-          Call <code>/start <jqfilter></code> to generate a channel to receive incoming notifiations.
+          Call <code>/start &lt;jqfilter&gt;</code> to generate a channel to receive incoming notifications.
 
-    TODO
+          To be notified of anything, send a webhook to the URL that will appear.
 
-          They will be turned into JSON and the <a href="https://stedolan.github.io/jq/manual/">jq</a> filter <code>{{Filter}}</code> will be applied.
-          Either application/json or application/x-www-form-urlencoded bodies and querystring params are supported. Headers will be aggregated in a <code>"headers"</code>
+          Any data you send to that URL (either JSON, querystring, text/plain or form data) will be turned into JSON and passed to the <a href="https://stedolan.github.io/jq/manual/">jq filter</a> as
+
+          <pre>
+{
+  "channel": "channel_id",
+  "headers": {...},
+  "data": {...}
+}
+          </pre>
+
+          The default filter is <code>.data</code>, which gives you just the raw data from the webhook.
         `)
 	case opts["start"].(bool):
 		filter, err := opts.String("<jqfilter>")
