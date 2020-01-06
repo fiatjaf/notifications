@@ -100,6 +100,24 @@ The default filter is <code>.data</code>, which gives you just the raw data from
 			"Filter":     filter,
 		})
 		sendMessage(message.Chat.ID, text)
+	case opts["setfilter"]:
+		channel, _ := opts.String("<channel>")
+		jqfilter, _ := opts.String("<jqfilter>")
+
+		_, err = pg.Exec(`
+          UPDATE channel
+          SET jq = $2
+          WHERE channel IN (
+            SELECT channel FROM subscription
+            WHERE channel = $1 AND chat_id = $3
+          )
+        `, channel, jqfilter, message.Chat.ID)
+		if err != nil {
+			return
+		}
+
+		sendMessage(message.Chat.ID,
+			"Channel "+channel+" filter updated to <code>"+jqfilter+"</code>.")
 	case opts["delete"].(bool):
 		if channel, err := opts.String("<channel>"); err == nil {
 			_, err = pg.Exec(`
