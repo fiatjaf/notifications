@@ -42,21 +42,21 @@ func handleMessage(message *tgbotapi.Message) {
 	switch {
 	case opts["help"].(bool):
 		sendMessage(message.Chat.ID, `
-          Call <code>/start &lt;jqfilter&gt;</code> to generate a channel to receive incoming notifications.
+Call <code>/start &lt;jqfilter&gt;</code> to generate a channel to receive incoming notifications.
 
-          To be notified of anything, send a webhook to the URL that will appear.
+To be notified of anything, send a webhook to the URL that will appear.
 
-          Any data you send to that URL (either JSON, querystring, text/plain or form data) will be turned into JSON and passed to the <a href="https://stedolan.github.io/jq/manual/">jq filter</a> as
+Any data you send to that URL (either JSON, querystring, text/plain or form data) will be turned into JSON and passed to the <a href="https://stedolan.github.io/jq/manual/">jq filter</a> as
 
-          <pre>
+<pre>
 {
   "channel": "channel_id",
   "headers": {...},
   "data": {...}
 }
-          </pre>
+</pre>
 
-          The default filter is <code>.data</code>, which gives you just the raw data from the webhook.
+The default filter is <code>.data</code>, which gives you just the raw data from the webhook.
         `)
 	case opts["start"].(bool):
 		filter, err := opts.String("<jqfilter>")
@@ -150,8 +150,9 @@ func handleMessage(message *tgbotapi.Message) {
           ORDER BY channel.id
         `, message.Chat.ID)
 
-		text := mustache.Render(`<b>Subscribed to channels:</b>{{#Channels}}
-          - <u>{{Id}}</u>: <code>{{ServiceURL}}/n/{{Id}}</code> (<code>{{JQ}}</code>){{/Channels}}{{^Channels}}No subscriptions.{{/Channels}}
+		text := mustache.Render(`<b>Subscribed to channels:</b>
+{{#Channels}}
+- <u>{{Id}}</u>: <code>{{ServiceURL}}/n/{{Id}}</code> (<code>{{JQ}}</code>){{/Channels}}{{^Channels}}No subscriptions.{{/Channels}}
         `, map[string]interface{}{
 			"ServiceURL": s.ServiceURL,
 			"Channels":   channels,
