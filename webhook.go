@@ -81,6 +81,8 @@ gotdata:
 	input := map[string]interface{}{
 		"id":      id,
 		"headers": headers,
+		"path":    r.URL.RawPath,
+		"query":   r.URL.RawQuery,
 		"data":    data,
 	}
 
