@@ -2,9 +2,9 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
-	"github.com/hoisie/mustache"
 	"github.com/itchyny/gojq"
 	tgbotapi "gopkg.in/telegram-bot-api.v4"
 )
@@ -16,13 +16,19 @@ func handle(upd tgbotapi.Update) {
 }
 
 func handleMessage(message *tgbotapi.Message) {
+	log := log.With().Int("user", message.From.ID).Str("name", message.From.UserName).
+		Int64("chat", message.Chat.ID).
+		Str("command", message.Text).
+		Logger()
+
 	if message.Text[0] != '/' {
 		return
 	}
 
 	opts, err := parseCommand(message.Text)
 	if err != nil {
-		log.Debug().Str("command", message.Text).Err(err).Msg("invalid")
+		log.Debug().Err(err).Msg("invalid")
+
 		sendMessage(message.Chat.ID,
 			strings.Replace(
 				strings.Replace(USAGE,
@@ -40,141 +46,45 @@ func handleMessage(message *tgbotapi.Message) {
 	}()
 
 	switch {
-	case opts["help"].(bool):
+	case opts["help"].(bool), opts["start"].(bool):
 		sendMessage(message.Chat.ID, `
-Call <code>/start &lt;jqfilter&gt;</code> to generate a channel to receive incoming notifications.
+Call <code>/url &lt;jqfilter&gt;</code> to get your URL to receive incoming notifications.
 
-To be notified of anything, send a webhook to the URL that will appear.
+To be notified of anything, send a webhook to that URL.
 
-Any data you send to that URL (either JSON, querystring, text/plain or form data) will be turned into JSON and passed to the <a href="https://stedolan.github.io/jq/manual/">jq filter</a> as
+Any data you send to that URL (either JSON, querystring, text/plain or form data) will be turned into JSON and passed to a <a href="https://stedolan.github.io/jq/manual/">jq filter</a>.
 
-<pre>
-{
-  "channel": "channel_id",
-  "headers": {...},
-  "data": {...}
-}
-</pre>
-
-The default filter is <code>.data</code>, which gives you just the raw data from the webhook.
+The default filter is <code>.</code>, which just gives you just the full body data from the webhook.
         `)
-	case opts["start"].(bool):
+	case opts["url"].(bool):
 		filter, err := opts.String("<jqfilter>")
 		if err != nil {
-			filter = ".data"
+			filter = "."
 		} else {
 			_, err = gojq.Parse(filter)
 			if err != nil {
 				err = fmt.Errorf("error parsing filter: %w", err)
+				sendMessage(message.Chat.ID, err.Error())
 				return
 			}
 		}
 
-		tx, err := pg.Beginx()
+		id, err := h.EncodeInt64([]int64{message.Chat.ID})
 		if err != nil {
-			return
-		}
-		defer tx.Rollback()
-
-		var id string
-		err = tx.Get(&id, `INSERT INTO channel (jq) VALUES ($1) RETURNING id`, filter)
-		if err != nil {
-			return
-		}
-		_, err = tx.Exec(`INSERT INTO subscription (channel, chat_id) VALUES ($1, $2)`,
-			id, message.Chat.ID)
-		if err != nil {
+			log.Error().Err(err).Int64("chatid", message.Chat.ID).
+				Msg("failed to encode chat id hashid")
+			sendMessage(message.Chat.ID, "unexpected error encoding chat id")
 			return
 		}
 
-		err = tx.Commit()
-		if err != nil {
-			return
+		query := ""
+		if filter != "." {
+			query = "?" + (url.Values{"jq": {filter}}).Encode()
 		}
+		text := fmt.Sprintf(`Send HTTP requests to
 
-		text := mustache.Render(`Channel <b>{{Id}}</b> created. 
-          Send HTTP requests to <code>{{ServiceURL}}/n/{{Id}}</code>.
-        `, map[string]interface{}{
-			"ServiceURL": s.ServiceURL,
-			"Id":         id,
-			"Filter":     filter,
-		})
-		sendMessage(message.Chat.ID, text)
-	case opts["setfilter"]:
-		channel, _ := opts.String("<channel>")
-		jqfilter, _ := opts.String("<jqfilter>")
-
-		_, err = pg.Exec(`
-          UPDATE channel
-          SET jq = $2
-          WHERE channel IN (
-            SELECT channel FROM subscription
-            WHERE channel = $1 AND chat_id = $3
-          )
-        `, channel, jqfilter, message.Chat.ID)
-		if err != nil {
-			return
-		}
-
-		sendMessage(message.Chat.ID,
-			"Channel "+channel+" filter updated to <code>"+jqfilter+"</code>.")
-	case opts["delete"].(bool):
-		if channel, err := opts.String("<channel>"); err == nil {
-			_, err = pg.Exec(`
-              DELETE FROM subscription
-              WHERE chat_id = $1 AND channel = $2
-            `, message.Chat.ID, channel)
-		} else {
-			_, err = pg.Exec(`
-              DELETE FROM subscription
-              WHERE chat_id = $1
-            `, message.Chat.ID)
-		}
-		if err != nil {
-			return
-		}
-
-		sendMessage(message.Chat.ID, "Deleted.")
-
-		go pg.Exec(`
-          DELETE FROM channel WHERE id IN (
-            SELECT channel.id FROM channel
-            LEFT OUTER JOIN subscription ON channel.id = subscription.channel
-            WHERE subscription.chat_id IS NULL
-          )
-        `)
-	case opts["subscribe"].(bool):
-		channel, _ := opts.String("<channel>")
-		_, err = pg.Exec(`
-          INSERT INTO subscription (channel, chat_id)
-          VALUES ($1, $2)
-          ON CONFLICT (channel, chat_id) DO NOTHING
-        `,
-			channel, message.Chat.ID)
-		if err != nil {
-			return
-		}
-
-		sendMessage(message.Chat.ID, "Subscribed to channel <code>"+channel+"</code>.")
-	case opts["list"].(bool):
-		var channels []struct {
-			Id string `db:"id"`
-			JQ string `db:"jq"`
-		}
-		err = pg.Select(&channels, `
-          SELECT id, jq FROM channel
-          INNER JOIN subscription ON subscription.channel = channel.id
-          WHERE chat_id = $1
-          ORDER BY channel.id
-        `, message.Chat.ID)
-
-		text := mustache.Render(`<b>Subscribed to channels:</b>
-{{#Channels}}
-- <u>{{Id}}</u>: <code>{{ServiceURL}}/n/{{Id}}</code> (<code>{{JQ}}</code>){{/Channels}}{{^Channels}}No subscriptions.{{/Channels}}
-        `, map[string]interface{}{
-			"ServiceURL": s.ServiceURL,
-			"Channels":   channels,
-		})
+<code>%s/w/%s%s</code>`,
+			s.ServiceURL, id, query)
 		sendMessage(message.Chat.ID, text)
 	}
 }

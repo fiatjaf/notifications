@@ -10,39 +10,29 @@ import (
 )
 
 func handleWebhook(w http.ResponseWriter, r *http.Request) {
+	filter := r.URL.Query().Get("jq")
+	if filter == "" {
+		filter = "."
+	}
+
+	chatIds, err := h.DecodeInt64WithError(mux.Vars(r)["id"])
+	if err != nil || len(chatIds) != 1 {
+		log.Warn().Err(err).Str("url", r.URL.String()).
+			Msg("failed to decode hashid")
+		w.WriteHeader(400)
+		return
+	}
+	chatId := chatIds[0]
+
 	var (
-		id      string = mux.Vars(r)["id"]
-		filter  string
-		chatIds []int64
 		data    interface{}
 		headers map[string]string
 	)
 
-	err := pg.Get(&filter, `SELECT jq FROM channel WHERE id = $1`, id)
-	if err != nil {
-		log.Warn().Err(err).Str("channel", id).Msg("failed to fetch filter")
-		http.Error(w, "", 500)
-		return
-	}
-
-	f, _ := gojq.Parse(filter)
-
-	err = pg.Select(&chatIds, `
-      SELECT chat_id
-      FROM subscription
-      WHERE channel = $1
-    `, id)
-	if err != nil {
-		log.Warn().Err(err).Str("channel", id).Msg("failed to fetch chat ids")
-		http.Error(w, "", 500)
-		return
-	}
-
-	log.Debug().Str("filter", filter).Str("channel", id).Interface("chats", chatIds).
+	log.Debug().Str("filter", filter).Int64("chat", chatId).
 		Msg("dispatching notification")
 
-	err = r.ParseForm()
-	if err != nil {
+	if err := r.ParseForm(); err != nil {
 		log.Warn().Err(err).Msg("parseform")
 	}
 
@@ -79,13 +69,13 @@ gotdata:
 	}
 
 	input := map[string]interface{}{
-		"id":      id,
 		"headers": headers,
 		"path":    r.URL.RawPath,
 		"query":   r.URL.RawQuery,
 		"data":    data,
 	}
 
+	f, _ := gojq.Parse(".data | " + filter) // TODO set headers etc. as $variables
 	iter := f.Run(input)
 	for {
 		v, ok := iter.Next()
@@ -95,11 +85,7 @@ gotdata:
 		if err, isErr := v.(error); isErr {
 			log.Warn().Err(err).Interface("input", input).Msg("jq error")
 			http.Error(w, "", 400)
-
-			for _, chatId := range chatIds {
-				sendMessage(chatId, err.Error())
-			}
-
+			sendMessage(chatId, err.Error())
 			return
 		}
 
@@ -110,8 +96,6 @@ gotdata:
 			res, _ := json.MarshalIndent(v, "", "  ")
 			text = string(res)
 		}
-		for _, chatId := range chatIds {
-			sendMessage(chatId, text)
-		}
+		sendMessage(chatId, text)
 	}
 }

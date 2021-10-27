@@ -10,11 +10,8 @@ import (
 const USAGE = `
 Usage:
   /help
-  /start [<jqfilter>]
-  /setfilter <channel> <jqfilter>
-  /subscribe <channel>
-  /list
-  /delete (all | <channel>)
+  /start
+  /url [<jqfilter>]
 `
 
 var parser = &docopt.Parser{HelpHandler: func(err error, usage string) {}}
